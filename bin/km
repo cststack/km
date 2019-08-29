@@ -1,0 +1,303 @@
+#!/bin/bash
+set +x
+
+version=v0.0.1-beta0
+programname=$0
+red="$(tput setaf 1)"
+green="$(tput setaf 2)"
+yellow="$(tput setaf 3)"
+
+session_duration=${SESSION_DURATION:-900}
+mfa_account=${MFA_ACCOUNT}
+
+if [ ! -f /tmp/mfa_timestamp ]
+then
+  echo 100 > /tmp/mfa_timestamp
+fi
+
+timestamp=`cat /tmp/mfa_timestamp`
+expired_timestamp=$(($timestamp + ${session_duration}))
+current_timestamp=$(date +"%s")
+
+MAIN(){
+  if [ "${add}" != "true" ] && ! (( $expired_timestamp > $current_timestamp ))
+  then
+    create_new_session
+  fi
+  if [ "${add}" == "true" ]
+  then
+    test_duplicates || exit 1
+    add_cluster || exit 1
+    change_cluster_name
+    set_kubectl_iam_auth
+  elif [ ! -z "${cluster}" ]
+  then
+    change_cluster_context
+  elif [ "${get_context}" == "true" ]
+  then
+    kubectl config get-contexts
+  elif [ ! -z "${namespace}" ]
+  then
+    change_namespace_context
+  else
+    kubectl_all
+  fi
+}
+
+usage() {
+  message_green "
+ Km is a thin wrapper for kubectl which helps with the EKS kubeconfig management.
+ Any other command not listed below will be proxied to local kubectl so km
+ can be used in the same way as kubectl.
+
+ Usage: $programname [add | --region region --profile profile --cluster-name EKS-cluster-name ]
+
+[add]
+ --region (mandatory)           - AWS region
+ --profile (mandatory)          - AWS Profile as it is in the ~/.aws/credentials
+ --cluster-name (mandatory)     - cluster name
+ --cluster-alias (optional)     - becomes mandatory if a cluster with the same name already exists
+ --iam-role (optional)          - becomes mandatory if the role cannot be pulled from ~/.aws/credentials
+ --kubectl-exec-args            - default token,-i,cluster_name,-r,iam_role
+
+[single options]
+ --change-cluster|cc            - change cluster context
+ --change-namespace|cn|cns      - change namespace context on the current cluster
+ --get-context|gc               - get the current context
+ --version                      - get the current ketl version
+ --exec                         - will prompt for a list of containers to exec to.
+ --logs                         - will prompt for a list of containers to tail the logs from
+  "
+}
+
+error() {
+  echo -e "${red}[ERROR] $@ $(tput sgr0)"
+}
+
+message_green() {
+  echo -e "${green}[INFO] $@ $(tput sgr0)"
+}
+
+message_yellow() {
+  echo -e "${yellow}$@ $(tput sgr0)"
+}
+
+all_args=$@
+
+while [ $# -gt 0 ]; do
+  # set the variable from input for all the arguments
+  input+=("$1")
+  # set variables from input
+  case "$1" in
+    --profile)
+      if [ -n "$2" ]; then
+        profile=$2
+        aws_eks_args+="--profile ${profile} "
+        shift
+      fi
+      ;;
+    --cluster-name)
+      if [ -n "$2" ]; then
+        cluster_name="${2}"
+        aws_eks_args+="--name ${cluster_name} "
+        shift
+      fi
+      ;;
+    --cluster-alias)
+      if [ -n "$2" ]; then
+        cluster_alias="${2}"
+        shift
+      fi
+      ;;
+    --region)
+      if [ -n "$2" ]; then
+        region="$2"
+        aws_eks_args+="--region ${region} "
+        shift
+      fi
+      ;;
+    --iam-role)
+      if [ -n "$2" ]; then
+        iam_role="$2"
+        shift
+      fi
+      ;;
+    --change-cluster|change-cluster|--cc|cc)
+      cluster=true
+      ;;
+    --change-namespace|change-namespace|change-ns|--cn|--cns|cn|cns)
+      namespace=${2:-default}
+      ;;
+    --get-context|get-context|--gc|gc)
+      get_context="true"
+      ;;
+    --kubectl-exec-args)
+    if [ -n "$2" ]; then
+      kubectl_exec_args="${2}"
+      shift
+    fi
+      ;;
+    --add|add)
+      if [ -n "$2" ]; then
+        add="true"
+      fi
+      ;;
+    -v|--version|version)
+      message_green "version: $version"
+      exit 0
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      command="$all_args"
+      break
+  esac
+  shift
+done
+
+unameOut="$(uname -s)"
+case "${unameOut}" in
+  Darwin*)
+    base64=gbase64
+    ed=ged
+    sed=gsed
+    grep=ggrep
+    ;;
+  *)
+    base64=base64
+    ed=ed
+    sed=sed
+    grep=grep
+    ;;
+esac
+
+change_cluster_context(){
+  current="$(kubectl config current-context)"
+  selected=$( (kubectl config view -o jsonpath="{.contexts[?(@.name != '${current}')].name}" | xargs -n 1; echo "${current}" ) \
+      | fzf -0 -1 --tac -q "${1:-""}" --prompt "$current> " --preview '
+              echo "---======{ {} }======---\n"  && \
+              echo "cluster name: " && \
+              kubectl config view -o jsonpath="{range .contexts[?(@.name == {} )].context}{@.cluster};{end}" && \
+              echo "\n" && \
+              echo "server endpoint: " && \
+              kubectl config view -o jsonpath="{.clusters[?(@.name == {} )].cluster.server}"
+              echo "\n" && \
+              echo "user: " && \
+              kubectl config view -o jsonpath="{range .contexts[?(@.name == {} )].context}{@.user};{end}"
+              echo "\n" && \
+              echo "current namespace: " && \
+    kubectl config view -o jsonpath="{range .contexts[?(@.name == {} )].context}{@.namespace};{end}"')
+  if [ ! -z "$selected" ]; then
+    kubectl config use-context "${selected}"
+  fi
+}
+
+change_namespace_context(){
+  current_cluster="$(kubectl config current-context)"
+  selected=$( (kubectl get namespaces -o=jsonpath="{.items[?(@.metadata.name!='$namespace')].metadata.name}" | xargs -n 1; echo $namespace ) | fzf -0 -1 --tac -q "${1:-""}" --prompt "$current> " --preview 'echo "---======{ $(kubectl config current-context) }======---\n"  && \
+    kubectl --namespace {} get pods')
+  if [ ! -z "$selected" ]; then
+    kubectl config set-context --current "--namespace=$selected" >/dev/null
+    message_green "Namespace changed to ${selected}"
+  fi
+}
+
+kubectl_all(){
+  current_cluster=$(kubectl config current-context)
+  current_ns=$(kubectl config view -o jsonpath="{range .contexts[?(@.name == \"${current_cluster}\" )].context}{@.namespace};{end}")
+  message_yellow "---======{ ${current_cluster} | ${current_ns} }======---"
+  if echo "${command}" | ${grep} -qx exec
+  then
+    selected=$( (kubectl get pods --template '{{range .items}}{{.metadata.name}}{{"\n"}}{{end}}' --sort-by=.metadata.name ) | fzf -0 -1 --tac  --prompt "$current_ns > " --preview 'echo "---======{ $(kubectl config current-context)} ======---\n"  && \
+      kubectl describe pod {}')
+    kubectl exec -it ${selected} sh  </dev/tty
+  elif echo "${command}" | ${grep} -qx logs
+  then
+    selected=$( (kubectl get pods --template '{{range .items}}{{.metadata.name}}{{"\n"}}{{end}}' --sort-by=.metadata.name ) | fzf -0 -1 --tac  --prompt "$current_ns > " --preview 'echo "---======{ $(kubectl config current-context) }======---\n"  && \
+      kubectl describe pod {}')
+    kubectl logs -f ${selected} --tail=100
+  else
+    kubectl ${command} </dev/tty
+  fi
+}
+
+test_duplicates(){
+  if [ -f ~/.kube/config ]
+  then
+    if ${grep} -v "\- ${cluster_name}" ~/.kube/config | ${grep} -wq ${cluster_name} || ${grep} -wq ${cluster_alias:-213412341} ~/.kube/config
+    then
+      error "A cluster with this name is already in the config ${cluster_name} ${cluster_alias}. Please specify an alias or change the name of the cluster"
+      return 1
+    fi
+  fi
+}
+
+add_cluster(){
+  aws eks update-kubeconfig ${aws_eks_args[@]}
+}
+
+change_cluster_name(){
+  cluster_arn=`${grep} arn:aws:eks ~/.kube/config | ${grep} ${cluster_name} | awk '{print $2}' | ${grep} eks | head -1`
+  if [ -z ${cluster_alias} ]
+  then
+    ${sed} "s|${cluster_arn}|${cluster_name}|g" -i ~/.kube/config
+  else
+    ${sed} "s|${cluster_arn}|${cluster_alias}|g" -i ~/.kube/config
+    ${sed} "s|${cluster_name}|${cluster_alias}|g" -i ~/.kube/config
+  fi
+}
+
+set_kubectl_iam_auth() {
+  if [ -z ${cluster_alias} ]
+  then
+    cluster_=${cluster_name}
+  else
+    cluster_=${cluster_alias}
+  fi
+
+  if [ -z ${iam_role} ]
+  then
+    iam_role=`aws configure get role_arn --profile ${profile}`
+  fi
+
+  if [ -z ${kubectl_exec_args} ]
+  then
+    kubectl_exec_args="token,-i,${cluster_name},-r,${iam_role}"
+  fi
+
+  kubectl config set-credentials ${cluster_} --exec-arg="${kubectl_exec_args}" --exec-command=aws-iam-authenticator --exec-env=AWS_PROFILE=mfa_session
+}
+
+test_cmd(){
+  if ! command -v $1 > /dev/null
+  then
+    return 1
+  fi
+}
+
+create_new_session(){
+  if test_cmd ykman
+  then
+    MFA_TOKEN=$(ykman oath code ${mfa_account} -s)
+  else
+    echo "Insert an MFA token:"
+    read MFA_TOKEN
+  fi
+
+  MFA=$(aws configure get mfa_serial)
+  json=$(aws sts get-session-token  --serial-number ${MFA} --token-code ${MFA_TOKEN} --duration-seconds ${session_duration})
+
+  AWS_ACCESS_KEY_ID=$(echo "$json" | jq -r '.Credentials.AccessKeyId')
+  AWS_SECRET_ACCESS_KEY=$(echo "$json" | jq -r '.Credentials.SecretAccessKey')
+  AWS_SESSION_TOKEN=$(echo "$json" | jq -r '.Credentials.SessionToken')
+
+  aws configure set aws_access_key_id ${AWS_ACCESS_KEY_ID} --profile mfa_session
+  aws configure set aws_secret_access_key ${AWS_SECRET_ACCESS_KEY}  --profile mfa_session
+  aws configure set aws_session_token ${AWS_SESSION_TOKEN}  --profile mfa_session
+
+  echo $(date +"%s") > /tmp/mfa_timestamp
+}
+
+MAIN

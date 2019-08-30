@@ -7,6 +7,9 @@ Check `km -h` for all the available options.
 
 *Tested with EKS access via iam assume role and secured with MFA.*
 
+## Demo
+![Demo](examples/demo.gif)
+
 ## Requirements
 
 - aws-iam-authenticator

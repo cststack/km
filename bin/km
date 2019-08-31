@@ -1,7 +1,7 @@
 #!/bin/bash
 set +x
 
-version=v0.0.1-beta0
+version=v0.0.1-beta1
 programname=$0
 red="$(tput setaf 1)"
 green="$(tput setaf 2)"
@@ -16,13 +16,13 @@ then
 fi
 
 timestamp=`cat /tmp/mfa_timestamp`
-expired_timestamp=$(($timestamp + $session_duration - 100))
+expired_timestamp=$(($timestamp + $session_duration - 300))
 current_timestamp=$(date +"%s")
 
 MAIN(){
   if [ "${add}" != "true" ] && ! (( $expired_timestamp > $current_timestamp ))
   then
-    create_new_session
+    create_new_session || exit 1
   fi
   if [ "${add}" == "true" ]
   then
@@ -39,6 +39,12 @@ MAIN(){
   elif [ ! -z "${namespace}" ]
   then
     change_namespace_context
+  elif echo "$update" | grep -q "now"
+  then
+    update_km $update
+  elif echo "$update" | grep -q "check"
+  then
+    update_km $update
   else
     kubectl_all
   fi
@@ -59,6 +65,10 @@ usage() {
  --cluster-alias (optional)     - becomes mandatory if a cluster with the same name already exists
  --iam-role (optional)          - becomes mandatory if the role cannot be pulled from ~/.aws/credentials
  --kubectl-exec-args            - default token,-i,cluster_name,-r,iam_role
+
+[update]
+ --now                          - update km from master branch or append a version
+ --check                        - check for the latest version on the master branch
 
 [single options]
  --change-cluster|cc            - change cluster context
@@ -89,6 +99,14 @@ while [ $# -gt 0 ]; do
   input+=("$1")
   # set variables from input
   case "$1" in
+    --update|update)
+      if [ -n "$2" ]; then
+        update="$2 $3"
+        shift
+      else
+        update=check
+      fi
+      ;;
     --profile)
       if [ -n "$2" ]; then
         profile=$2
@@ -294,6 +312,12 @@ create_new_session(){
   MFA=$(aws configure get mfa_serial)
   json=$(aws sts get-session-token  --serial-number ${MFA} --token-code ${MFA_TOKEN} --duration-seconds ${session_duration})
 
+  if ! echo "$json" | ${grep} -q AccessKeyId
+  then
+    error "$json"
+    return 1
+  fi
+
   AWS_ACCESS_KEY_ID=$(echo "$json" | jq -r '.Credentials.AccessKeyId')
   AWS_SECRET_ACCESS_KEY=$(echo "$json" | jq -r '.Credentials.SecretAccessKey')
   AWS_SESSION_TOKEN=$(echo "$json" | jq -r '.Credentials.SessionToken')
@@ -303,6 +327,27 @@ create_new_session(){
   aws configure set aws_session_token ${AWS_SESSION_TOKEN}  --profile mfa_session
 
   echo $(date +"%s") > /tmp/mfa_timestamp
+}
+
+update_km(){
+  km_version=$2
+  curl_check="curl -sL https://raw.githubusercontent.com/cststack/km/${2:-master}/bin/km"
+  latest_version=$(${curl_check} | grep version= | awk -F'=' '{print $2}')
+
+  if [ "$1" == "now" ] || [ "$1" == "--now" ]
+  then
+    ${curl_check} -o /usr/local/bin/km
+    chmod +x /usr/local/bin/km
+    message_green Updated to $latest_version
+  elif [ "$1" == "check" ] || [ "$1" == "" ] || [ "$1" == "--check" ]
+  then
+    if [ ${latest_version} != $version ]
+    then
+      message_yellow "Please update your local km. Latest version is ${latest_version}. \nLocal install is $version. \nRun \"km update now\" to get the latest update"
+    else
+      message_green Latest version is ${latest_version}. Local install is $version
+    fi
+  fi
 }
 
 MAIN

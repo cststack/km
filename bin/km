@@ -16,7 +16,7 @@ then
 fi
 
 timestamp=`cat /tmp/mfa_timestamp`
-expired_timestamp=$(($timestamp + ${session_duration}))
+expired_timestamp=$(($timestamp + $session_duration - 100))
 current_timestamp=$(date +"%s")
 
 MAIN(){
@@ -179,16 +179,16 @@ change_cluster_context(){
       | fzf -0 -1 --tac -q "${1:-""}" --prompt "$current> " --preview '
               echo "---======{ {} }======---\n"  && \
               echo "cluster name: " && \
-              kubectl config view -o jsonpath="{range .contexts[?(@.name == {} )].context}{@.cluster};{end}" && \
+              kubectl config view -o jsonpath="{range .contexts[?(@.name == {} )].context}{@.cluster}{end}" && \
               echo "\n" && \
               echo "server endpoint: " && \
               kubectl config view -o jsonpath="{.clusters[?(@.name == {} )].cluster.server}"
               echo "\n" && \
               echo "user: " && \
-              kubectl config view -o jsonpath="{range .contexts[?(@.name == {} )].context}{@.user};{end}"
+              kubectl config view -o jsonpath="{range .contexts[?(@.name == {} )].context}{@.user}{end}"
               echo "\n" && \
               echo "current namespace: " && \
-    kubectl config view -o jsonpath="{range .contexts[?(@.name == {} )].context}{@.namespace};{end}"')
+    kubectl config view -o jsonpath="{range .contexts[?(@.name == {} )].context}{@.namespace}{end}"')
   if [ ! -z "$selected" ]; then
     kubectl config use-context "${selected}"
   fi
@@ -206,8 +206,8 @@ change_namespace_context(){
 
 kubectl_all(){
   current_cluster=$(kubectl config current-context)
-  current_ns=$(kubectl config view -o jsonpath="{range .contexts[?(@.name == \"${current_cluster}\" )].context}{@.namespace};{end}")
-  message_yellow "---======{ ${current_cluster} | ${current_ns} }======---"
+  current_ns=$(kubectl config view -o jsonpath="{range .contexts[?(@.name == \"${current_cluster}\" )].context}{@.namespace}{end}")
+  message_yellow "---======{ ${current_cluster} | ${current_ns:-default} }======---"
   if echo "${command}" | ${grep} -qx exec
   then
     selected=$( (kubectl get pods --template '{{range .items}}{{.metadata.name}}{{"\n"}}{{end}}' --sort-by=.metadata.name ) | fzf -0 -1 --tac  --prompt "$current_ns > " --preview 'echo "---======{ $(kubectl config current-context)} ======---\n"  && \
@@ -219,7 +219,12 @@ kubectl_all(){
       kubectl describe pod {}')
     kubectl logs -f ${selected} --tail=100
   else
-    kubectl ${command} </dev/tty
+    if echo "${command}" | ${grep} -q exec
+    then
+      kubectl ${command} </dev/tty
+    else
+      kubectl ${command}
+    fi
   fi
 }
 

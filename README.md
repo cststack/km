@@ -13,10 +13,10 @@ Check `km -h` for all the available options.
 ## Requirements
 
 - aws-iam-authenticator
-- awscli 1.16.+ (configured like on the example)
-- kubectl 1.15+
+- awscli >= 1.16 (configured like on the example)
+- kubectl >= 1.15
 - yubikey (optional)
-- gnu-sed, gnu-grep
+- gnu-sed, gnu-grep (MacOS)
 - [fzf](https://github.com/junegunn/fzf)
 
 ## Installation
@@ -32,7 +32,6 @@ chmod +x /usr/local/bin/km
 - context change for the cluster and the namespace (fzf is required for this)
 - run any kubectl commands via km
 - if the [ykman](https://github.com/Yubico/yubikey-manager) is installed and an Yubikey is available on the system the mfa insert is seamless. If multiple profiles are available the ykman profile can be configured via MFA_ACCOUNT variable.
-- the session validity can be configured with the SESSION_DURATION variable. By default set to 15 minutes (900 seconds).
 
 ## Examples
 

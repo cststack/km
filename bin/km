@@ -1,7 +1,7 @@
 #!/bin/bash
 set +x
 
-version=v0.0.1-beta1
+version=v0.0.1-beta2
 programname=$0
 red="$(tput setaf 1)"
 green="$(tput setaf 2)"
@@ -196,7 +196,7 @@ change_cluster_context(){
   selected=$((kubectl config view -o jsonpath="{.contexts[?(@.name != '${current_cluster}')].name}" | \
             xargs -n 1; echo "${current_cluster}" ) \
             | fzf -0 -1 --tac -q "${1:-""}" --prompt "> " --preview '
-            echo "---======{ {} }======---\n"  && \
+            echo "--==={ {} }===--\n"  && \
             echo "cluster name: " && \
             kubectl config view -o jsonpath="{range .contexts[?(@.name == {} )].context}{@.cluster}{end}" && \
             echo "\n" && \
@@ -210,7 +210,8 @@ change_cluster_context(){
             kubectl config view -o jsonpath="{range .contexts[?(@.name == {} )].context}{@.namespace}{end}"')
   if [ ! -z "$selected" ]; then
     kubectl config use-context "${selected}" >/dev/null
-    message_green "Cluster set to -={ ${selected} }=-"
+    namespace=$(kubectl config view -o jsonpath="{.contexts[?(@.name == \"${selected}\")].context.namespace}")
+    message_green "Cluster set to --==={ ${selected} | ${namespace:-default} }===--"
   fi
 }
 
@@ -220,30 +221,30 @@ change_namespace_context(){
   selected=$((kubectl get namespaces -o=jsonpath="{.items[?(@.metadata.name!='${namespace:-default}')].metadata.name}" | \
             xargs -n 1; echo ${namespace:-default}) \
             | fzf -0 -1 --tac -q "${1:-""}" --prompt "> " --preview '\
-            echo "---======{ $(kubectl config current-context) }======---\n"  && \
+            echo "--==={ $(kubectl config current-context) }===--\n"  && \
             kubectl --namespace {} get pods')
   if [ ! -z "$selected" ]; then
     kubectl config set-context --current "--namespace=$selected" >/dev/null
-    message_green "Namespace set to -={ ${selected} }=-"
+    message_green "Namespace set to --==={ ${selected} }===--"
   fi
 }
 
 kubectl_all(){
   current_cluster=$(kubectl config current-context)
   current_ns=$(kubectl config view -o jsonpath="{range .contexts[?(@.name == \"${current_cluster}\" )].context}{@.namespace}{end}")
-  message_yellow "---======{ ${current_cluster} | ${current_ns:-default} }======---"
+  message_yellow "--==={ ${current_cluster} | ${current_ns:-default} }===--"
   if echo "${command}" | ${grep} -qx exec
   then
     selected=$((kubectl get pods --template '{{range .items}}{{.metadata.name}}{{"\n"}}{{end}}' --sort-by=.metadata.name ) \
               | fzf -0 -1 --tac  --prompt "$current_ns > " --preview '\
-              echo "---======{ $(kubectl config current-context)} ======---\n"  && \
+              echo "--==={ $(kubectl config current-context) }===--\n"  && \
               kubectl describe pod {}')
     kubectl exec -it ${selected} sh  </dev/tty
   elif echo "${command}" | ${grep} -qx logs
   then
     selected=$((kubectl get pods --template '{{range .items}}{{.metadata.name}}{{"\n"}}{{end}}' --sort-by=.metadata.name ) \
               | fzf -0 -1 --tac  --prompt "$current_ns > " --preview '\
-              echo "---======{ $(kubectl config current-context) }======---\n"  && \
+              echo "--==={ $(kubectl config current-context) }===--\n"  && \
               kubectl describe pod {}')
     kubectl logs -f ${selected} --tail=100
   else

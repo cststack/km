@@ -1,7 +1,7 @@
 #!/bin/bash
 set +x
 
-version=v0.0.1-beta2
+version=v0.0.1-beta3
 programname=$0
 red="$(tput setaf 1)"
 green="$(tput setaf 2)"
@@ -36,7 +36,7 @@ MAIN(){
   elif [ "${get_context}" == "true" ]
   then
     kubectl config get-contexts
-  elif [ ! -z "${namespace}" ]
+  elif [ "${change_namespace}" == "true" ]
   then
     change_namespace_context
   elif echo "$update" | grep -q "now"
@@ -144,7 +144,8 @@ while [ $# -gt 0 ]; do
       cluster=true
       ;;
     --change-namespace|change-namespace|change-ns|--cn|--cns|cn|cns)
-      namespace=${2:-default}
+      change_namespace=true
+      namespace=${2}
       ;;
     --get-context|get-context|--gc|gc)
       get_context="true"
@@ -216,13 +217,18 @@ change_cluster_context(){
 }
 
 change_namespace_context(){
-  current_cluster="$(kubectl config current-context)"
-  namespace=$(kubectl config view -o jsonpath="{.contexts[?(@.name == \"${current_cluster}\")].context.namespace}")
-  selected=$((kubectl get namespaces -o=jsonpath="{.items[?(@.metadata.name!='${namespace:-default}')].metadata.name}" | \
-            xargs -n 1; echo ${namespace:-default}) \
-            | fzf -0 -1 --tac -q "${1:-""}" --prompt "> " --preview '\
-            echo "--==={ $(kubectl config current-context) }===--\n"  && \
-            kubectl --namespace {} get pods')
+  if [ -z "${namespace}" ]
+  then
+    current_cluster="$(kubectl config current-context)"
+    current_namespace=$(kubectl config view -o jsonpath="{.contexts[?(@.name == \"${current_cluster}\")].context.namespace}")
+    selected=$((kubectl get namespaces -o=jsonpath="{.items[?(@.metadata.name!='${current_namespace:-default}')].metadata.name}" | \
+              xargs -n 1; echo ${current_namespace:-default}) \
+              | fzf -0 -1 --tac -q "${1:-""}" --prompt "> " --preview '\
+              echo "--==={ $(kubectl config current-context) }===--\n"  && \
+              kubectl --namespace {} get pods')
+  else
+    selected=$namespace
+  fi
   if [ ! -z "$selected" ]; then
     kubectl config set-context --current "--namespace=$selected" >/dev/null
     message_green "Namespace set to --==={ ${selected} }===--"

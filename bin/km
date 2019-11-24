@@ -1,7 +1,7 @@
 #!/bin/bash
 set +x
 
-version=v0.0.1-beta3
+version=v0.0.1-beta4
 programname=$0
 red="$(tput setaf 1)"
 green="$(tput setaf 2)"
@@ -217,6 +217,12 @@ change_cluster_context(){
 }
 
 change_namespace_context(){
+  if ! echo $(kubectl get ns --no-headers=true -o custom-columns=":metadata.name" | tr "\n"  " ") | ${grep} -wq ${namespace:-empty}
+  then
+    error "$namespace namespace doesn't exist"
+    namespace=""
+  fi
+
   if [ -z "${namespace}" ]
   then
     current_cluster="$(kubectl config current-context)"

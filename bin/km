@@ -1,35 +1,46 @@
 #!/bin/bash
 set +x
 
-version=v0.0.1-beta4
+version=v0.0.1-beta5
 programname=$0
 red="$(tput setaf 1)"
 green="$(tput setaf 2)"
 yellow="$(tput setaf 3)"
 
 session_duration=${SESSION_DURATION:-900}
-mfa_account=${MFA_ACCOUNT}
-
-if [ ! -f /tmp/mfa_timestamp ]
-then
-  echo 100 > /tmp/mfa_timestamp
-fi
-
-timestamp=`cat /tmp/mfa_timestamp`
-expired_timestamp=$(($timestamp + $session_duration - 300))
-current_timestamp=$(date +"%s")
 
 MAIN(){
-  if [ "${add}" != "true" ] && ! (( $expired_timestamp > $current_timestamp ))
+  if [ "${add}" != "true" ] && kubectl config current-context > /dev/null
+  then
+    test_mfa
+  fi
+
+  if [ "${generate_mfa}" == "true" ]
+  then
+    if [ ! -f ${temp_mfa_file} ]
+    then
+      echo 100 > ${temp_mfa_file}
+    fi
+    timestamp=`cat ${temp_mfa_file}`
+    expired_timestamp=$(($timestamp + $session_duration - 300))
+    current_timestamp=$(date +"%s")
+  fi
+
+  if [ "${add}" != "true" ] && [ "${generate_mfa}" == "true" ] && ! (( $expired_timestamp > $current_timestamp ))
   then
     create_new_session || exit 1
   fi
+
   if [ "${add}" == "true" ]
   then
     test_duplicates || exit 1
     add_cluster || exit 1
     change_cluster_name
     set_kubectl_iam_auth
+  elif [ ! -z "${import_kubeconfig}" ]
+  then
+    echo "import"
+    import_kubeconfig ${import_kubeconfig}
   elif [ ! -z "${cluster}" ]
   then
     change_cluster_context
@@ -60,11 +71,17 @@ usage() {
 
 [add]
  --region (mandatory)           - AWS region
- --profile (mandatory)          - AWS Profile as it is in the ~/.aws/credentials
+ --profile (mandatory)          - AWS Profile (IAM Role) as it is in the ~/.aws/credentials
  --cluster-name (mandatory)     - cluster name
  --cluster-alias (optional)     - becomes mandatory if a cluster with the same name already exists
  --iam-role (optional)          - becomes mandatory if the role cannot be pulled from ~/.aws/credentials
  --kubectl-exec-args            - default token,-i,cluster_name,-r,iam_role
+ --mfa-profile                  - if MFA is enabled specify the account name used.
+                                  If Yubikey is installed the mfa-profile needs to match
+                                  the Yubico Authenticator account name. If the same name is used for
+                                  the AWS sso account in the ~/.aws/credentials then it will be used
+                                  also to generate the STS keys, if not the default
+                                  profile ~/.aws/credentials will be used.
 
 [update]
  --now                          - update km from master branch or append a version
@@ -77,6 +94,8 @@ usage() {
  --version                      - get the current ketl version
  --exec                         - will prompt for a list of containers to exec to.
  --logs                         - will prompt for a list of containers to tail the logs from
+ --import-kubeconfig            - import another cluster from a kubeconfig file.
+                                  As arg specify the path to the new KUBECONFIG.
   "
 }
 
@@ -140,6 +159,12 @@ while [ $# -gt 0 ]; do
         shift
       fi
       ;;
+    --mfa-profile)
+      if [ -n "$2" ]; then
+        mfa_profile="$2"
+        shift
+      fi
+      ;;
     --change-cluster|change-cluster|--cc|cc)
       cluster=true
       ;;
@@ -159,6 +184,11 @@ while [ $# -gt 0 ]; do
     --add|add)
       if [ -n "$2" ]; then
         add="true"
+      fi
+      ;;
+    --import-kubeconfig|import-kubeconfig)
+      if [ -n "$2" ]; then
+        import_kubeconfig="$2"
       fi
       ;;
     -v|--version|version)
@@ -219,7 +249,6 @@ change_cluster_context(){
 change_namespace_context(){
   if ! echo $(kubectl get ns --no-headers=true -o custom-columns=":metadata.name" | tr "\n"  " ") | ${grep} -wq ${namespace:-empty}
   then
-    error "$namespace namespace doesn't exist"
     namespace=""
   fi
 
@@ -285,10 +314,15 @@ add_cluster(){
 }
 
 change_cluster_name(){
+  echo "cluster name is ${cluster_name}"
   cluster_arn=`${grep} arn:aws:eks ~/.kube/config | ${grep} ${cluster_name} | awk '{print $2}' | ${grep} eks | head -1`
   if [ -z ${cluster_alias} ]
   then
     ${sed} "s|${cluster_arn}|${cluster_name}|g" -i ~/.kube/config
+  elif [ ! -z ${cluster_alias} ] && [ ! -z ${mfa_profile} ]
+  then
+    ${sed} "s|${cluster_arn}|${cluster_alias}--${mfa_profile}-mfa|g" -i ~/.kube/config
+    ${sed} "s|name: ${cluster_name}|name: ${cluster_alias}--${mfa_profile}-mfa|g" -i ~/.kube/config
   else
     ${sed} "s|${cluster_arn}|${cluster_alias}|g" -i ~/.kube/config
     ${sed} "s|name: ${cluster_name}|name: ${cluster_alias}|g" -i ~/.kube/config
@@ -299,6 +333,9 @@ set_kubectl_iam_auth() {
   if [ -z ${cluster_alias} ]
   then
     cluster_=${cluster_name}
+  elif [ ! -z ${cluster_alias} ] && [ ! -z ${mfa_profile} ]
+  then
+    cluster_=${cluster_alias}--${mfa_profile}-mfa
   else
     cluster_=${cluster_alias}
   fi
@@ -313,13 +350,35 @@ set_kubectl_iam_auth() {
     kubectl_exec_args="token,-i,${cluster_name},-r,${iam_role}"
   fi
 
-  kubectl config set-credentials ${cluster_} --exec-arg="${kubectl_exec_args}" --exec-command=aws-iam-authenticator --exec-env=AWS_PROFILE=mfa_session
+  if [ ! -z $mfa_profile ]
+  then
+    kubectl config set-credentials ${cluster_} --exec-arg="${kubectl_exec_args}" --exec-command=aws-iam-authenticator --exec-env=AWS_PROFILE=mfa_session_${mfa_profile}
+  fi
 }
 
 test_cmd(){
   if ! command -v $1 > /dev/null
   then
     return 1
+  fi
+}
+
+test_mfa(){
+  cluster_name=`kubectl config current-context`
+  m1=${cluster_name##*--}
+  if [ "${m1##*-}" == "mfa" ]
+  then
+    generate_mfa=true
+    mfa_account=${m1%-*}
+    temp_mfa_file=/tmp/mfa_timestamp_${mfa_account}
+  fi
+
+# test if the mfa_profile is configured in the aws/credentials. If not use the default profile.
+  if aws configure list --profile ${mfa_account} > /dev/null 2>&1
+  then
+    aws_mfa_account="--profile ${mfa_account}"
+  else
+    aws_mfa_account="--profile default"
   fi
 }
 
@@ -332,8 +391,8 @@ create_new_session(){
     read MFA_TOKEN
   fi
 
-  MFA=$(aws configure get mfa_serial)
-  json=$(aws sts get-session-token  --serial-number ${MFA} --token-code ${MFA_TOKEN} --duration-seconds ${session_duration})
+  MFA=$(aws configure get mfa_serial ${aws_mfa_account})
+  json=$(aws sts get-session-token  --serial-number ${MFA} --token-code ${MFA_TOKEN} --duration-seconds ${session_duration} ${aws_mfa_account})
 
   if ! echo "$json" | ${grep} -q AccessKeyId
   then
@@ -345,11 +404,11 @@ create_new_session(){
   AWS_SECRET_ACCESS_KEY=$(echo "$json" | jq -r '.Credentials.SecretAccessKey')
   AWS_SESSION_TOKEN=$(echo "$json" | jq -r '.Credentials.SessionToken')
 
-  aws configure set aws_access_key_id ${AWS_ACCESS_KEY_ID} --profile mfa_session
-  aws configure set aws_secret_access_key ${AWS_SECRET_ACCESS_KEY}  --profile mfa_session
-  aws configure set aws_session_token ${AWS_SESSION_TOKEN}  --profile mfa_session
+  aws configure set aws_access_key_id ${AWS_ACCESS_KEY_ID} --profile mfa_session_${mfa_account}
+  aws configure set aws_secret_access_key ${AWS_SECRET_ACCESS_KEY}  --profile mfa_session_${mfa_account}
+  aws configure set aws_session_token ${AWS_SESSION_TOKEN}  --profile mfa_session_${mfa_account}
 
-  echo $(date +"%s") > /tmp/mfa_timestamp
+  echo $(date +"%s") > /tmp/mfa_timestamp_${mfa_account}
 }
 
 update_km(){
@@ -371,6 +430,11 @@ update_km(){
       message_green Latest version is ${latest_version}. Local install is $version
     fi
   fi
+}
+
+import_kubeconfig() {
+  # function copied from https://github.com/kubernetes/kubernetes/issues/46381#issuecomment-461404505
+  KUBECONFIG=~/.kube/config:$1 kubectl config view --flatten > ~/.kube/mergedkub && mv -f ~/.kube/mergedkub ~/.kube/config
 }
 
 MAIN

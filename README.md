@@ -20,11 +20,19 @@ Check `km -h` for all the available options.
 - jq
 - awscli >= 1.16 (configured like on the example, eks clusters only)
 - kubectl >= 1.15
-- yubikey (optional)
+- yubikey, ykman (optional)
 - gnu-sed, gnu-grep (MacOS)
 - [fzf](https://github.com/junegunn/fzf)
 
 ## Installation
+
+### MacOS requirements
+
+```
+brew install fzf
+brew install grep
+brew install gnu-sed
+```
 
 ```
 curl -L https://raw.githubusercontent.com/cststack/km/master/bin/km -o /usr/local/bin/km

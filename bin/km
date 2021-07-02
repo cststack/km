@@ -10,12 +10,12 @@ yellow="$(tput setaf 3)"
 session_duration=${SESSION_DURATION:-900}
 
 MAIN(){
-  if [ "${add}" != "true" ] && kubectl config current-context > /dev/null
+  if [ "${add}" != "true" ] && [ -z "${import_kubeconfig}" ] && kubectl config current-context > /dev/null
   then
     test_mfa
   fi
 
-  if [ "${generate_mfa}" == "true" ]
+  if [ "${generate_mfa}" == "true" ] && [ -z "${import_kubeconfig}" ]
   then
     if [ ! -f ${temp_mfa_file} ]
     then
@@ -26,7 +26,7 @@ MAIN(){
     current_timestamp=$(date +"%s")
   fi
 
-  if [ "${add}" != "true" ] && [ "${generate_mfa}" == "true" ] && ! (( $expired_timestamp > $current_timestamp ))
+  if [ "${add}" != "true" ] && [ "${generate_mfa}" == "true" ] && [ -z "${import_kubeconfig}" ] && ! (( $expired_timestamp > $current_timestamp ))
   then
     create_new_session || exit 1
   fi

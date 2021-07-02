@@ -16,9 +16,9 @@ Check `km -h` for all the available options.
 
 ## Requirements
 
-- aws-iam-authenticator
+- aws-iam-authenticator (eks clusters only)
 - jq
-- awscli >= 1.16 (configured like on the example)
+- awscli >= 1.16 (configured like on the example, eks clusters only)
 - kubectl >= 1.15
 - yubikey (optional)
 - gnu-sed, gnu-grep (MacOS)

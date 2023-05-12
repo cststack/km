@@ -280,7 +280,7 @@ kubectl_all(){
               | fzf -0 -1 --tac  --prompt "$current_ns > " --preview '\
               echo "--==={ $(kubectl config current-context) }===--\n"  && \
               kubectl describe pod {}')
-    kubectl exec -it ${selected} sh  </dev/tty
+    kubectl exec -it ${selected} -- bash||sh||ash||ksh </dev/tty
   elif echo "${command}" | ${grep} -qx logs
   then
     selected=$((kubectl get pods --template '{{range .items}}{{.metadata.name}}{{"\n"}}{{end}}' --sort-by=.metadata.name ) \

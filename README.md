@@ -1,4 +1,5 @@
-# km
+# km 
+## >>> Replaced by https://github.com/catalinpan/km <<<
 
 Km is a thin wrapper for kubectl which helps with the EKS kubeconfig management.
 Any other command will be proxied to kubectl so km command can be used in the same way as kubectl.
